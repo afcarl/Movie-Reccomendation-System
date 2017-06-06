@@ -3,7 +3,7 @@ from math import *
 import sys
 
 class collaborative_filtering(object):
-    def __init__(self, test_file, out_file):
+    def __init__(self, method, test_file, out_file):
         self.training_data = np.array([])
         self.train_udf = np.array([])
         self.test_file = test_file
@@ -11,7 +11,27 @@ class collaborative_filtering(object):
         self.testing_users = {}
         self.testing_movies = {}
 
+        #Run the correct method
+        if method == "pearson":
+            self.mthd = self.reccomend_user_based_pearson
+        elif method == "cosine":
+            self.mthd = self.reccomend_user_based_cosine
+        elif method == "iuf":
+            self.mthd = self.reccomend_user_based_pearson_iuf
+        elif method == "amplification":
+            self.mthd = self.reccomend_user_based_pearson_amp
+        elif method == "item":
+            self.mthd = self.reccomend_item_based
+        elif method == "personal":
+            pass
+        else:
+            print "Incorrect method, Methods include:\npearson\ncosine\niuf\namplification\nitem\npersonal"
+            sys.exit()
+
     def fetch_data(self):
+        """
+        Grab all the data and organize it properly
+        """
         self.training_data = np.loadtxt("train.txt")
         t = np.loadtxt(self.test_file)
         #Organize test data to easier to work with
@@ -41,15 +61,21 @@ class collaborative_filtering(object):
                 counts[i] = 0
         self.train_udf = self.training_data * counts
 
-
     def cosine_similarity(self, person_x, person_y):
+        """
+        Takes two arrays, returns their cosine similarity
+        """
         assert person_x.size == person_y.size
         numerator =  sum(x*y for x,y in zip(person_x, person_y))
         denominator = (sqrt(sum(x*x for x in person_x))) * (sqrt(sum(y*y for y in person_y)))
         return numerator/denominator
 
     def pearson_similarity(self, person_x, person_y, movie):
+        """
+        Takes two arrays, returns their Pearson correlation
+        """
         assert person_x.size == person_y.size
+        #Grab averages
         pxm = sum(float(x) for x in person_x if x != 0)/np.count_nonzero(person_x)
         pym = sum(float(y) for y in person_y if y != 0)/np.count_nonzero(person_y)
         numerator = sum(((float(x)-pxm)*(float(y)-pym) for x,y in zip(person_x, person_y)))
@@ -57,10 +83,14 @@ class collaborative_filtering(object):
         return float(numerator)/float(denominator)
 
     def adjusted_cosine_similarity(self, wanted_movie, movie, averages):
+        """
+        Takes two array, returns their Pearson correlation. Used for Item based
+        Collaborative Filtering
+        """
         assert wanted_movie.size == movie.size
         wanted_movie_mm = np.zeros(shape=(200))
         movie_mm = np.zeros(shape=(200))
-        #Subract average user rating from the movies
+        #Subract average user rating from the movies for adjusted part
         i = 0
         for wm, m in zip(wanted_movie, movie):
             if m != 0:
@@ -71,15 +101,48 @@ class collaborative_filtering(object):
 
         numerator = sum(((float(x)*float(y)) for x, y in zip(movie_mm, wanted_movie_mm)))
         denominator = (sqrt(sum((float(x))**2 for x in movie_mm))) * (sqrt(sum(float(y)**2 for y in wanted_movie_mm)))
+
         try:
             return float(numerator)/ float(denominator)
         except:
             return 0.0
 
+    def rate_minus_mean(self, similarities, ratings, averages):
+        """
+        Used to return final rating deviation value for user. Inputs are
+        a dictionary of Pearson similarities, ratings, and average values for user's as keys
+        """
+        assert len(similarities) == len(ratings)
+        denominator = sum(abs(x) for x in similarities.itervalues())
+        numerator = (sum(x*(y-z) for x,y,z in zip(similarities.values(), ratings.values(), averages.values())))
+        return numerator/denominator
+
+    def rate_minus_mean_adj(self, similarities, ratings, averages):
+        """
+        Used to return final rating deviation for adjusted cosine similarity. Inputs are
+        a dictionary of similarities and ratings, and a list of average ratings
+        """
+        assert len(similarities) == len(ratings)
+        denominator = sum(abs(x) for x in similarities.itervalues())
+        #averages is array instead of dict for adjusted cosine
+        numerator = (sum(x*(y-z) for x,y,z in zip(similarities.values(), ratings.values(), averages)))
+        return numerator/denominator
+
+    def rate(self, similarities, ratings):
+        """
+        Returns weighted average predicted rating when using cosine similarity
+        Takes dictionary of similarities and ratings as Inputs
+        """
+        assert len(similarities) == len(ratings)
+        return (1/(sum(similarities.itervalues())))*sum(x*y for x,y in zip(similarities.values(), ratings.values()))
+
     def reccomend_user_based_cosine(self, person, movie, data):
+        """
+        Takes the test person, movie to predict, and training data as arguments
+        Returns persons predicted rating based on cosine similarity
+        """
         similarities = {}
         ratings = {}
-
         #Get similarity scores for users and their ratings
         for i, row in enumerate(data):
             if row[int(movie)-1] != 0:
@@ -87,7 +150,6 @@ class collaborative_filtering(object):
                 if (s!=0):
                     similarities[i] = s #Array of similarity vals
                     ratings[i] = row[int(movie)-1]   #array of these peoples ratings
-        #sorted_users = sorted(similarities.iterkeys(), key=lambda k:similarities[k], reverse=True)
         #divide by total similaries, each person score minus persons mean
         s_ratings = 0
         n_ratings = 0
@@ -97,10 +159,10 @@ class collaborative_filtering(object):
                 n_ratings+=1
 
         average = float(s_ratings)/float(n_ratings)
-        if len(similarities) < 2:
+        #K furthest neighbors
+        if len(similarities) < 8: #Keeps getting better with ensemble, try 6, last was 5 @0.74335 10 @ 0.741955 15 @0.74466 ->@ 8 is max
             return average
 
-        #Try removing similarities of 1
         try:
             rating = self.rate(similarities, ratings)
             if rating <=0.5:
@@ -113,7 +175,12 @@ class collaborative_filtering(object):
         #Exceptions when no similar users are found
         except:
             return average
+
     def reccomend_user_based_pearson(self, person, movie, data):
+        """
+        Takes the test person, movie to predict, and training data as arguments
+        Returns persons predicted rating based on pearson correlation
+        """
         similarities = {}
         temp_similarities = {}
         ratings = {}
@@ -137,15 +204,7 @@ class collaborative_filtering(object):
                 s = self.pearson_similarity(person, row, movie)
                 similarities[i] = s #Array of similarity vals
 
-        """
-        #Remove some neighbors
-        similarities = {key: temp_similarities[key] for key in temp_similarities}
-        for key in temp_similarities:
-            if temp_similarities[key] < 0.05:
-                similarities.pop(key, None)
-                ratings.pop(key, None)
-                averages.pop(key, None)
-        """
+        #Increases predictive power slightly
         if len(similarities) == 1:
             return average
 
@@ -162,8 +221,11 @@ class collaborative_filtering(object):
         except:
             return average
 
-
-    def reccomend_user_based_pearson_udf(self, person, movie, data):
+    def reccomend_user_based_pearson_iuf(self, person, movie, data):
+        """
+        Takes the test person, movie to predict, and training data as arguments
+        Returns persons predicted rating based on pearson correlation from a IUF matrix
+        """
         similarities = {}
         ratings = {}
         averages = {}
@@ -197,15 +259,18 @@ class collaborative_filtering(object):
                 return 5.0
             if rating+average == 0:
                 return average
-            if ((rating+average) < 0.5): #IS this the best method?
+            if ((rating+average) < 0.5):
                 return 1.0
             return rating+average
         except:
             return average
 
-            #Exceptions when no similar users are found
     def reccomend_user_based_pearson_amp(self, person, movie, data):
-        amp = 3.5
+        """
+        Takes the test person, movie to predict, and training data as arguments
+        Returns persons predicted rating using pearson correlation and case amplification
+        """
+        amp = 2.5
         similarities = {}
         ratings = {}
         averages = {}
@@ -246,6 +311,10 @@ class collaborative_filtering(object):
             return average
 
     def reccomend_item_based(self, person, movie, data):
+        """
+        Takes the test person, movie to predict, and training data as arguments
+        Returns persons predicted rating using item based collaborative filtering
+        """
         similarities = {}
         ratings = {}
         averages = []
@@ -274,7 +343,7 @@ class collaborative_filtering(object):
         j = 0 #movie index
         for i, row in enumerate(item_matrix):
             if (j == len(movies_ind)):
-                break;
+                break; #Only rated so many movies
             if i == (movies_ind[j]-1):
                 ratings[i] = person[i-1]
                 s = self.adjusted_cosine_similarity(wanted_movie, row, averages_user)
@@ -295,41 +364,51 @@ class collaborative_filtering(object):
         except:
             return average
 
-
-    def rate_minus_mean(self, similarities, ratings, averages):
-        assert len(similarities) == len(ratings)
-        denominator = sum(abs(x) for x in similarities.itervalues())
-        numerator = (sum(x*(y-z) for x,y,z in zip(similarities.values(), ratings.values(), averages.values())))
-        return numerator/denominator
-
-    def rate_minus_mean_adj(self, similarities, ratings, averages):
-        #Values is a array for adjusted cosine
-        assert len(similarities) == len(ratings)
-        denominator = sum(abs(x) for x in similarities.itervalues())
-        numerator = (sum(x*(y-z) for x,y,z in zip(similarities.values(), ratings.values(), averages)))
-        return numerator/denominator
-
-    def rate(self, similarities, ratings):
-        assert len(similarities) == len(ratings)
-        return (1/(sum(similarities.itervalues())))*sum(x*y for x,y in zip(similarities.values(), ratings.values()))
-
-
     def predict(self):
+        """
+        Predicts movie ratings using the method passed as command line argument
+        Outputs a file containing all the ratings
+        """
+        n = 0
+        outdata = np.zeros(shape=((sum(len(x) for x in self.testing_movies.values())),3))
+        #Get test ratings
+        for user, values in self.testing_users.iteritems():
+            for movie in self.testing_movies[user]:
+                #Compare test data with all the training data
+                p_rating = self.mthd(np.array(values), movie, self.training_data)
+                outdata[n] = np.array([int(user), int(movie), int(round(p_rating))])
+                n+=1
+        #Output in correct format
+        np.savetxt(self.out_file, outdata, delimiter=' ', fmt='%d')
+
+    def predict_ensemble(self):
+        """
+        Predicts movie ratings using a weighted ensemble method.
+        Combines cosine similarity, pearson correlation, iuf, and item based collaborative Filtering
+        Outputs a text file
+        """
         n = 0
         outdata = np.zeros(shape=((sum(len(x) for x in self.testing_movies.values())),3))
         for user, values in self.testing_users.iteritems():
             for movie in self.testing_movies[user]:
-                #My implementation
+                #My implementation, just use all of them
                 p_rating = self.reccomend_user_based_pearson(np.array(values), movie, self.training_data)
                 c_rating =self.reccomend_user_based_cosine(np.array(values), movie, self.training_data)
-                p_rating = (p_rating + c_rating)/2
+                u_rating = self.reccomend_user_based_pearson_iuf(np.array(values), movie, self.training_data)
+                i_rating = self.reccomend_item_based(np.array(values), movie, self.training_data) #
+                #Ensemble method with weighted averages
+                p_rating = ((1-0.760958791659826)*p_rating+(1-0.781686094237399)*c_rating+(1-0.761328189131505)*u_rating+(1-0.854662616975866)*i_rating)/((1-0.781686094237399)+(1-0.760958791659826)+(1-0.761328189131505)+(1-0.774380245008199)+(1-0.854662616975866))
                 outdata[n] = np.array([int(user), int(movie), int(round(p_rating))])
                 n+=1
         np.savetxt(self.out_file, outdata, delimiter=' ', fmt='%d')
 
 if __name__ == "__main__":
-    assert len(sys.argv) == 3, "Please pass method, test file, and output file as arguments. Methods include cosine and pearson"
-    scp, test_file, out_file = sys.argv
-    c = collaborative_filtering(test_file, out_file)
+    assert len(sys.argv) == 4, "Please pass method, test file, and output file as arguments."
+    scp, method, test_file, out_file = sys.argv
+
+    c = collaborative_filtering(method, test_file, out_file)
     c.fetch_data()
-    c.predict()
+    if method != "personal":
+        c.predict()
+    else:
+        c.predict_ensemble()
